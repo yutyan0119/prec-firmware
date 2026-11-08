@@ -1,0 +1,206 @@
+diff --git a/keyboards/cipulot/common/ec_board.c b/keyboards/cipulot/common/ec_board.c
+--- a/keyboards/cipulot/common/ec_board.c
++++ b/keyboards/cipulot/common/ec_board.c
+@@ -1,3 +1,4 @@
+ /* Copyright 2023 Cipulot
++ * Modified for PREC by Yuto Nakamura (published 2026-11-08).
+  *
+  * This program is free software: you can redistribute it and/or modify
+@@ -21,6 +22,75 @@
+ #    include "transactions.h"
+ #endif
+ 
++static bool ec_eeprom_config_is_valid(const eeprom_ec_config_t* cfg) {
++    if (cfg->actuation_mode > 1) {
++        return false;
++    }
++
++    if (cfg->mode_0_actuation_threshold > 1023) {
++        return false;
++    }
++
++    if (cfg->mode_0_release_threshold > cfg->mode_0_actuation_threshold) {
++        return false;
++    }
++
++    if (cfg->mode_1_initial_deadzone_offset > 1023) {
++        return false;
++    }
++
++    if (cfg->mode_1_actuation_offset == 0 || cfg->mode_1_release_offset == 0) {
++        return false;
++    }
++
++    for (uint8_t row = 0; row < MATRIX_ROWS; row++) {
++        for (uint8_t col = 0; col < MATRIX_COLS; col++) {
++            uint16_t bottoming = cfg->bottoming_reading[row][col];
++            if (bottoming == 0 || bottoming > 1023) {
++                return false;
++            }
++        }
++    }
++
++    return true;
++}
++
++static bool ec_apply_minimum_thresholds(eeprom_ec_config_t* cfg) {
++    bool changed = false;
++
++    if (cfg->mode_0_actuation_threshold < DEFAULT_MODE_0_ACTUATION_LEVEL) {
++        cfg->mode_0_actuation_threshold = DEFAULT_MODE_0_ACTUATION_LEVEL;
++        changed                         = true;
++    }
++
++    if (cfg->mode_0_release_threshold < DEFAULT_MODE_0_RELEASE_LEVEL) {
++        cfg->mode_0_release_threshold = DEFAULT_MODE_0_RELEASE_LEVEL;
++        changed                       = true;
++    }
++
++    if (cfg->mode_0_release_threshold > cfg->mode_0_actuation_threshold) {
++        cfg->mode_0_release_threshold = cfg->mode_0_actuation_threshold;
++        changed                       = true;
++    }
++
++    if (cfg->mode_1_initial_deadzone_offset < DEFAULT_MODE_1_INITIAL_DEADZONE_OFFSET) {
++        cfg->mode_1_initial_deadzone_offset = DEFAULT_MODE_1_INITIAL_DEADZONE_OFFSET;
++        changed                             = true;
++    }
++
++    if (cfg->mode_1_actuation_offset < DEFAULT_MODE_1_ACTUATION_OFFSET) {
++        cfg->mode_1_actuation_offset = DEFAULT_MODE_1_ACTUATION_OFFSET;
++        changed                      = true;
++    }
++
++    if (cfg->mode_1_release_offset < DEFAULT_MODE_1_RELEASE_OFFSET) {
++        cfg->mode_1_release_offset = DEFAULT_MODE_1_RELEASE_OFFSET;
++        changed                    = true;
++    }
++
++    return changed;
++}
++
+ void eeconfig_init_kb(void) {
+     // Default values
+     eeprom_ec_config.actuation_mode                 = DEFAULT_ACTUATION_MODE;
+@@ -46,6 +116,18 @@ void keyboard_post_init_kb(void) {
+     // Read custom menu variables from memory
+     eeconfig_read_kb_datablock(&eeprom_ec_config);
+ 
++    // Stale/invalid EEPROM data can happen when switching between debug/full firmware.
++    // Reinitialize to safe defaults if values are out of expected range.
++    if (!ec_eeprom_config_is_valid(&eeprom_ec_config)) {
++        eeconfig_init_kb();
++        eeconfig_read_kb_datablock(&eeprom_ec_config);
++    }
++
++    // Keep existing users from staying on overly sensitive legacy defaults.
++    if (ec_apply_minimum_thresholds(&eeprom_ec_config)) {
++        eeconfig_update_kb_datablock(&eeprom_ec_config);
++    }
++
+     // Set runtime values to EEPROM values
+     ec_config.actuation_mode                 = eeprom_ec_config.actuation_mode;
+     ec_config.mode_0_actuation_threshold     = eeprom_ec_config.mode_0_actuation_threshold;
+diff --git a/keyboards/cipulot/common/via_ec.c b/keyboards/cipulot/common/via_ec.c
+--- a/keyboards/cipulot/common/via_ec.c
++++ b/keyboards/cipulot/common/via_ec.c
+@@ -1,3 +1,4 @@
+ /* Copyright 2023 Cipulot
++ * Modified for PREC by Yuto Nakamura (published 2026-11-08).
+  *
+  * This program is free software: you can redistribute it and/or modify
+@@ -30,6 +31,7 @@ void ec_save_threshold_data(uint8_t option);
+ void ec_save_bottoming_reading(void);
+ void ec_show_calibration_data(void);
+ void ec_clear_bottoming_calibration_data(void);
++void via_custom_value_command_kb(uint8_t *data, uint8_t length);
+ 
+ // Declaring enums for VIA config menu
+ enum via_enums {
+@@ -44,7 +46,9 @@ enum via_enums {
+     id_bottoming_calibration = 8,
+     id_noise_floor_calibration = 9,
+     id_show_calibration_data = 10,
+-    id_clear_bottoming_calibration_data = 11
++    id_clear_bottoming_calibration_data = 11,
++    id_save_apc_threshold_data = 12,
++    id_save_rt_threshold_data = 13
+     // clang-format on
+ };
+ 
+@@ -119,8 +123,20 @@ void via_config_set_value(uint8_t *data) {
+             ec_save_threshold_data(value_data[0]);
+             break;
+         }
++        case id_save_apc_threshold_data: {
++            if (value_data[0] != 0) {
++                ec_save_threshold_data(0);
++            }
++            break;
++        }
++        case id_save_rt_threshold_data: {
++            if (value_data[0] != 0) {
++                ec_save_threshold_data(1);
++            }
++            break;
++        }
+         case id_noise_floor_calibration: {
+-            if (value_data[0] == 0) {
++            if (value_data[0] != 0) {
+                 ec_noise_floor();
+                 ec_rescale_values(0);
+                 ec_rescale_values(1);
+@@ -130,17 +146,17 @@ void via_config_set_value(uint8_t *data) {
+                 uprintf("#############################\n");
+                 uprintf("# Noise floor data acquired #\n");
+                 uprintf("#############################\n");
+-                break;
+             }
++            break;
+         }
+         case id_show_calibration_data: {
+-            if (value_data[0] == 0) {
++            if (value_data[0] != 0) {
+                 ec_show_calibration_data();
+             }
+             break;
+         }
+         case id_clear_bottoming_calibration_data: {
+-            if (value_data[0] == 0) {
++            if (value_data[0] != 0) {
+                 ec_clear_bottoming_calibration_data();
+             }
+             break;
+@@ -186,6 +202,20 @@ void via_config_get_value(uint8_t *data) {
+             value_data[0] = eeprom_ec_config.mode_1_release_offset;
+             break;
+         }
++        case id_bottoming_calibration: {
++            value_data[0] = ec_config.bottoming_calibration ? 1 : 0;
++            break;
++        }
++        case id_save_threshold_data:
++        case id_noise_floor_calibration:
++        case id_show_calibration_data:
++        case id_clear_bottoming_calibration_data:
++        case id_save_apc_threshold_data:
++        case id_save_rt_threshold_data: {
++            // One-shot actions should stay off in the UI.
++            value_data[0] = 0;
++            break;
++        }
+         default: {
+             // Unhandled value.
+             break;
+@@ -226,6 +256,11 @@ void via_custom_value_command_kb(uint8_t *data, uint8_t length) {
+     *command_id = id_unhandled;
+ }
+ 
++// VIA core forwards custom-lighting packets here when VIA_CUSTOM_LIGHTING_ENABLE is set.
++void raw_hid_receive_kb(uint8_t *data, uint8_t length) {
++    via_custom_value_command_kb(data, length);
++}
++
+ // Rescale the values received by VIA to fit the new range
+ void ec_rescale_values(uint8_t item) {
+     switch (item) {

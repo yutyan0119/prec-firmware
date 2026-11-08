@@ -7,12 +7,12 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     # Same QMK CLI image as the pinned Vial-QMK revision's CI.
     container: ghcr.io/qmk/qmk_cli@sha256:16c4916e95b99bf88d27b15aec8db409ee17265d1710287fde248c6666508966
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Prepare matching sources
@@ -28,7 +28,7 @@ jobs:
           install -m 644 LICENSE dist/LICENSE
           printf 'PREC source and build scripts: %s\nVial-QMK base: https://github.com/vial-kb/vial-qmk/tree/%s\n' "$SOURCE_URL" "$(cat firmware/vial-qmk-revision)" > dist/SOURCE.txt
           cd dist && sha256sum prec_vial.bin > SHA256SUMS
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: prec-vial
           path: dist/
